@@ -1,0 +1,107 @@
+Inputs:
+  ventral_det_data: "{{ventral_det_data}}"  
+  dorsal_det_data: "{{dorsal_det_data}}"            
+
+metadata:
+  "fusion type": "fusion along detection with downsample"
+  require_flipping_along_illu_for_dorsaldet: "{{require_flipping_along_illu_for_dorsaldet}}"  
+  require_flipping_along_det_for_dorsaldet: "{{require_flipping_along_det_for_dorsaldet}}"                  
+  require_registration: "{{require_registration}}"
+  sparse_sample: "{{sparse_sample}}"
+  z_spacing: "{{z_spacing}}"                     
+  xy_spacing: "{{xy_spacing}}"   
+  xy_downsample_ratio: "{{xy_downsample_ratio}}"  
+  z_downsample_ratio: "{{z_downsample_ratio}}"  
+  require_precropping: "{{require_precropping}}"   
+  precropping_params: "{{precropping_params}}" 
+  resample_ratio: "{{resample_ratio}}"  
+  window_size: "{{window_size}}"
+  poly_order: "{{poly_order}}"
+  n_epochs: "{{n_epochs}}"
+  require_segmentation: "{{require_segmentation}}"
+  registration_params: "{{registration_params}}"
+  device: "{{device}}"
+  skip_illuFusion: "{{skip_illuFusion}}"
+
+"{{result_folder}}":
+  description: "Fusion results of datasets with dual-sided detection."
+  path: "{{save_path}}"
+  contents:
+    "ventral_det":
+      description: "Intermediate results that come from low-res ventral_det_data and low-res fusion result."
+      "illumination orientation": "{{ventral_illu_orient}}"
+      path: "{{save_path}}/ventral_det"
+      contents:
+        "{{det_fuse_result}}":
+          description: "Low-res fusion result."
+          path: "{{save_path}}/ventral_det/{{det_fuse_result}}"
+        "{{det_boundary_result}}":
+          description: "Fusion boundary."
+          path: "{{save_path}}/ventral_det/{{det_boundary_result}}"
+        {% if require_segmentation %}
+        "segmentation_det.npy":
+          description: "Integrated segmentation mask."
+          path: "{{save_path}}/ventral_det/segmentation_det.npy"
+        {% endif %}
+        {% if require_registration %}
+        "regInfo.npy":
+          description: "Coarse registration metadata."
+          path: "{{save_path}}/ventral_det/regInfo.npy"
+        {% if require_refine_reg %}
+        "regInfo_refine.npy":
+          description: "Refined registration metadata."
+          path: "{{save_path}}/ventral_det/regInfo_refine.npy"
+        {% endif %}
+        "translating_information.npy":
+          description: "Composed registration metadata for data transformation."
+          path: "{{save_path}}/ventral_det/translating_information.npy"
+        {% endif %}
+        {% if include_fuse_det_mask %}
+        "fuse_det_mask":
+          description: "Fusion map."
+          path: "{{save_path}}/ventral_det/fuse_det_mask"
+        {% endif %}
+
+    "dorsal_det":
+      description: "Intermediate results that come from low-res dorsal_det_data."
+      "illumination orientation": "{{dorsal_illu_orient}}"
+      path: "{{save_path}}/dorsal_det"
+      contents:
+        {% if require_registration %}
+        "{{coarse_registered_vol}}":
+          description: "Coarse low-res registration result from back view"
+          path: "{{save_path}}/dorsal_det/{{coarse_registered_vol}}"
+        {% if require_refine_reg %}
+        "{{fine_registered_vol}}":
+          description: "Final low-res registered image (back view)"
+          path: "{{save_path}}/dorsal_det/{{fine_registered_vol}}"
+        {% endif %}
+        {% endif %}
+
+    "high_res":
+      description: "Full-res results."
+      "illumination orientation": "{{dorsal_illu_orient}}"
+      path: "{{save_path}}/high_res"
+      contents:
+        "quadrupleFusionResult_hr.tif":
+          description: "Fusion result"
+          path: "{{save_path}}/high_res/quadrupleFusionResult_hr.tif"
+        {% if require_registration %}
+        "dorsal_det_reg_hr.tif":
+          description: "Coarse registration result from back view"
+          path: "{{save_path}}/high_res/dorsal_det_reg_hr.tif"
+        {% if not require_refine_reg_hr %}
+        "regInfo_refine_hr.npy":
+          description: "Refined registration metadata."
+          path: "{{save_path}}/high_res/regInfo_refine_hr.npy"
+        "dorsal_det_fine_reg_hr.tif":
+          description: "Refined registration result from back view"
+          path: "{{save_path}}/high_res/dorsal_det_fine_reg_hr.tif"
+        {% endif %}
+        {% endif %}
+        {% if include_fuse_det_mask %}
+        "fuse_det_mask_hr":
+          description: "Fusion map."
+          path: "{{save_path}}/high_res/fuse_det_mask_hr"
+        {% endif %}
+

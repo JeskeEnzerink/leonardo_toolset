@@ -1,0 +1,110 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "leonardo_toolset"
+keywords = ["leonardo_toolset"]
+version = "1.1.1"
+description = "Leonardo: an LSFM image processing toolset"
+authors = [
+    {name = "Yu Liu", email = "liuyu9671@gmail.com" },
+]
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+dependencies = [
+    "jax",
+    "scikit-image",
+    "torch",
+    "torchvision",
+    "tqdm",
+    "matplotlib",
+    "dm-haiku",
+    "SimpleITK",
+    "jaxwt",
+    "ptwt",
+    "PyWavelets",
+    "antspyx",
+    "opencv-python",
+    "colour",
+    "open3d",
+    "h5py",
+    "bioio<2",
+    "bioio-tifffile",
+    "jinja2",
+    "pyyaml",
+    "bioio-ome-tiff<1.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "bump-my-version>=1.1.1",
+    "coverage>=5.1",
+    "ipython>=7.15.0",
+    "m2r2>=0.2.7",
+    "pytest-runner>=5.2",
+    "Sphinx>=3.4.3",
+    "sphinx_rtd_theme>=0.5.1",
+    "tox>=3.15.2",
+    "twine>=3.1.1",
+    "wheel>=0.34.2",
+]
+test = [
+    "black>=19.10b0",
+    "codecov>=2.1.4",
+    "flake8>=3.8.3",
+    "flake8-debugger>=3.2.1",
+    "pytest>=5.4.3",
+    "pytest-cov>=2.9.0",
+    "pytest-raises>=0.11",
+    "tox>=3.15.2",
+]
+all = [
+    "bump-my-version>=1.1.1",
+    "coverage>=5.1",
+    "ipython>=7.15.0",
+    "m2r2>=0.2.7",
+    "pytest-runner>=5.2",
+    "Sphinx>=3.4.3",
+    "sphinx_rtd_theme>=0.5.1",
+    "tox>=3.15.2",
+    "twine>=3.1.1",
+    "wheel>=0.34.2",
+    "black>=19.10b0",
+    "codecov>=2.1.4",
+    "flake8>=3.8.3",
+    "flake8-debugger>=3.2.1",
+    "pytest>=5.4.3",
+    "pytest-cov>=2.9.0",
+    "pytest-raises>=0.11",
+]
+
+[project.urls]
+Homepage = "https://github.com/peng-lab/leonardo_toolset"
+"Bug Tracker" = "https://github.com/peng-lab/leonardo_toolset/issues"
+Documentation = "https://github.com/peng-lab/leonardo_toolset#README.md"
+"Source Code" = "https://github.com/peng-lab/leonardo_toolset"
+"User Support" = "https://github.com/peng-lab/leonardo_toolset/issues"
+
+[project.scripts]
+run_fuse_illu = "leonardo_toolset.fusion.bin.run_fuse_illu:main"
+run_fuse_det = "leonardo_toolset.fusion.bin.run_fuse_det:main"
+run_destripe = "leonardo_toolset.destripe.bin.run_destripe:main"
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.setuptools.package-data]
+leonardo_toolset = ["**/*.yaml"]

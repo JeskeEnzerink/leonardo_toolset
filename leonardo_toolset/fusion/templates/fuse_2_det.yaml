@@ -1,0 +1,80 @@
+Inputs:
+  ventral_det_data: "{{ventral_det_data}}"  
+  dorsal_det_data: "{{dorsal_det_data}}"            
+
+metadata:
+  "fusion type": "fusion along detection without downsample"
+  require_flipping_along_illu_for_dorsaldet: "{{require_flipping_along_illu_for_dorsaldet}}"  
+  require_flipping_along_det_for_dorsaldet: "{{require_flipping_along_det_for_dorsaldet}}"                  
+  require_registration: "{{require_registration}}"
+  sparse_sample: "{{sparse_sample}}"
+  z_spacing: "{{z_spacing}}"                     
+  xy_spacing: "{{xy_spacing}}"   
+  xy_downsample_ratio: "{{xy_downsample_ratio}}"  
+  z_downsample_ratio: "{{z_downsample_ratio}}"  
+  require_precropping: "{{require_precropping}}"   
+  precropping_params: "{{precropping_params}}" 
+  resample_ratio: "{{resample_ratio}}"  
+  window_size: "{{window_size}}"
+  poly_order: "{{poly_order}}"
+  n_epochs: "{{n_epochs}}"
+  require_segmentation: "{{require_segmentation}}"
+  registration_params: "{{registration_params}}"
+  device: "{{device}}"
+  skip_illuFusion: "{{skip_illuFusion}}"
+
+"{{result_folder}}":
+  description: "Fusion results of datasets with dual-sided detection."
+  path: "{{save_path}}"
+  contents:
+    "{{ventral_folder}}":
+      description: "Intermediate results that come from ventral_det_data and final fusion result."
+      "illumination orientation": "{{ventral_illu_orient}}"
+      path: "{{save_path}}/{{ventral_folder}}"
+      contents:
+        "{{det_fuse_result}}":
+          description: "Integrated segmentation mask."
+          path: "{{save_path}}/{{ventral_folder}}/{{det_fuse_result}}"
+        "{{det_boundary_result}}":
+          description: "Fusion boundary."
+          path: "{{save_path}}/{{ventral_folder}}/{{det_boundary_result}}"
+        {% if require_segmentation %}
+        "segmentation_det.npy":
+          description: "Integrated segmentation mask."
+          path: "{{save_path}}/{{ventral_folder}}/segmentation_det.npy"
+        {% endif %}
+        {% if require_registration %}
+        "regInfo.npy":
+          description: "Coarse registration metadata."
+          path: "{{save_path}}/{{ventral_folder}}/regInfo.npy"
+        {% if require_refine_reg %}
+        "regInfo_refine.npy":
+          description: "Refined registration metadata."
+          path: "{{save_path}}/{{ventral_folder}}/regInfo_refine.npy"
+        {% endif %}
+        "translating_information.npy":
+          description: "Composed registration metadata for data transformation."
+          path: "{{save_path}}/{{ventral_folder}}/translating_information.npy"
+        {% endif %}
+        {% if include_fuse_det_mask %}
+        "fuse_det_mask":
+          description: "Fusion map."
+          path: "{{save_path}}/{{ventral_folder}}/fuse_det_mask"
+        {% endif %}
+
+    "{{dorsal_folder}}":
+      description: "Intermediate results that come from dorsal_det_data."
+      "illumination orientation": "{{dorsal_illu_orient}}"
+      path: "{{save_path}}/{{dorsal_folder}}"
+      contents:
+        {% if require_registration %}
+        "{{coarse_registered_vol}}":
+          description: "Coarse registration result from back view"
+          path: "{{save_path}}/{{dorsal_folder}}/{{coarse_registered_vol}}"
+        {% if require_refine_reg %}
+        "{{fine_registered_vol}}":
+          description: "Final registered image (back view)"
+          path: "{{save_path}}/{{dorsal_folder}}/{{fine_registered_vol}}"
+        {% endif %}
+        {% endif %}
+

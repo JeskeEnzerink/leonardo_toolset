@@ -1,0 +1,62 @@
+Inputs:   
+  {% if illu_horizontal %}
+  left_illu_data: "{{left_illu_data}}"  
+  right_illu_data: "{{right_illu_data}}"
+  {% endif %} 
+  {% if not illu_horizontal %}
+  top_illu_data: "{{top_illu_data}}"  
+  bottom_illu_data: "{{bottom_illu_data}}"
+  {% endif %}                 
+
+metadata:
+  "fusion type": "fusion along illumination"              
+  sparse_sample: "{{sparse_sample}}"
+  cam_pos: "{{cam_pos}}"
+  camera_position: "{{camera_position}}"                       
+  require_precropping: "{{require_precropping}}"   
+  precropping_params: "{{precropping_params}}" 
+  resample_ratio: "{{resample_ratio}}"  
+  window_size: "{{window_size}}"
+  poly_order: "{{poly_order}}"
+  n_epochs: "{{n_epochs}}"
+  require_segmentation: "{{require_segmentation}}"
+  device: "{{device}}"
+
+"{{result_folder}}":
+  description: "Fusion results of datasets with dual-sided illumination."
+  path: "{{save_path}}"
+  contents:
+    "{{top_folder}}":
+      description: "Intermediate results that come from (top/left)_illu_data and final fusion result."
+      "illumination orientation": "{{top_illu_orient}}"
+      path: "{{save_path}}/{{top_folder}}"
+      contents:
+        "{{illu_fuse_result}}":
+          description: "Fusion result."
+          path: "{{save_path}}/{{top_folder}}/{{illu_fuse_result}}"
+        "{{illu_boundary_result}}":
+          description: "Fusion boundary."
+          path: "{{save_path}}/{{top_folder}}/{{illu_boundary_result}}"
+        "info.npy":
+          description: "Volumetric information."
+          path: "{{save_path}}/{{top_folder}}/info.npy"
+        {% if require_segmentation %}
+        "segmentation_illu.npy":
+          description: "Integrated segmentation mask."
+          path: "{{save_path}}/{{top_folder}}/segmentation_illu.npy"
+        {% endif %}
+        {% if include_fuse_illu_mask %}
+        "fuse_illu_mask":
+          description: "Fusion map."
+          path: "{{save_path}}/{{top_folder}}/fuse_illu_mask"
+        {% endif %}
+
+    "{{bottom_folder}}":
+      description: "Intermediate results that come from (bottom/right)_illu_data."
+      "illumination orientation": "{{bottom_illu_orient}}"
+      path: "{{save_path}}/{{bottom_folder}}"
+      contents:
+        "info.npy":
+          description: "Volumetric information."
+          path: "{{save_path}}/{{bottom_folder}}/info.npy"
+

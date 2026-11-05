@@ -1,0 +1,40 @@
+{
+  "input": {
+    "zarr_path": "ZARR PATH",
+    "zarr_level": 0,
+    "z_start": 512,
+    "z_end": 513,
+    "y_start": 0,
+    "y_end": 3136,
+    "x_start": 0,
+    "x_end": 2656
+  },
+  "output": {
+    "save_path": "OUTPUT PATH"
+  },
+  "destripe": {
+    "is_vertical": false,
+    "angle_offset": [-0.3,-10,10],
+    "illu_orient": null,
+    "non_positive": true,
+    "allow_stripe_deviation": false
+  },
+  "training": {
+    "resample_ratio": 3,
+    "guided_upsample_kernel": 149,
+    "hessian_kernel_sigma": 1,
+    "lambda_masking_mse": 1,
+    "lambda_tv": 1,
+    "lambda_hessian": 1,
+    "inc": 16,
+    "n_epochs": 300,
+    "wedge_degree": 5,
+    "n_neighbors": 16,
+    "backend": "torch",
+    "device": null
+  },
+  "display": {
+    "display": false,
+    "display_angle_orientation": true
+  }
+}
