@@ -5,6 +5,7 @@
 
 *Leonardo* is a toolbox able to resolve all sample-induced aberrations in selective plane illumination microscopy (SPIM, also called light-sheet fluorescence microscopy, LSFM) by using two major modules: (1) **DeStripe** removes the stripe artifacts caused by light absorption; (2) **Fuse** reconstructs one single high-quality image from dual-sided illumination and/or dual-sided detection while eliminating optical distortions (ghosts) caused by light refraction. 
 
+
 ## Tutorials:
 
 For a quick start, you can walk through [our tutorials and example notebooks](https://leonardo-toolset.readthedocs.io/en/latest/tutorials.html). You can easily run it on Google Colab by clicking on the badge.
@@ -27,6 +28,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for information related to developing the
 ## Issues:
 
 If you encounter any problems, please [file an issue] along with a detailed description.
+
+## TO DO:
+optimization of quality, compare float64/32/16, compare resample ratios, look for ways to speed it up
 
 **MIT license**
 
