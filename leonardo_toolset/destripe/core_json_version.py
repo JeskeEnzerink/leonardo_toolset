@@ -1,6 +1,8 @@
 import warnings
+import time
 from typing import Dict, Union
 import numpy as np
+from pathlib import Path
 import copy
 import dask.array as da
 from torch.nn import functional as F
@@ -57,6 +59,24 @@ except Exception as e:
     jax_flag = 0
 
 
+def _profile_sync(value, backend):
+    """Synchronize for meaningful stage timings (profiling mode only)."""
+    if backend == "jax" and value is not None:
+        for leaf in jax.tree_util.tree_leaves(value):
+            if hasattr(leaf, "block_until_ready"):
+                leaf.block_until_ready()
+
+
+def _profile_log(message, duration):
+    """Report elapsed stage duration (not wall-clock start time)."""
+    if duration >= 60:
+        minutes, seconds = divmod(duration, 60)
+        pretty = f"{duration:.2f}s ({int(minutes)}m {seconds:05.2f}s)"
+    else:
+        pretty = f"{duration:.2f}s"
+    print(f"[timing] {message}: {pretty}", flush=True)
+
+
 class DeStripe:
     """
     Main class for Leonardo-DeStripe.
@@ -78,6 +98,7 @@ class DeStripe:
         wedge_degree: float = 29,
         n_neighbors: int = 16,
         backend: str = "torch", ###base = jax, but this dint work for me (errors)
+        loss_prefix: str = None,
         device: str = None,
     ):
         """
@@ -195,6 +216,11 @@ class DeStripe:
         s_: int = 1,
         z: int = 1,
         backend: str = "torch",
+        loss_prefix: str = None,
+        analysis: dict = None,
+        initial_net_params=None,
+        epochs_override: int = None,
+        return_target: bool = True,
     ):
         """
         Train the destriping model on a single image slice.
@@ -214,6 +240,16 @@ class DeStripe:
         Returns:
             tuple: (output image, target image)
         """
+        # Stage timers include GPU synchronization to separate actual GPU work
+        # from later host-side reconstruction. No intermediate image copies.
+        _prof_prev = time.perf_counter()
+        def _mark(stage, ready=None):
+            nonlocal _prof_prev
+            _profile_sync(ready, backend)
+            now = time.perf_counter()
+            _profile_log(f"plane {s_}/{z} {stage}", now - _prof_prev)
+            _prof_prev = now
+
         rng_seq = jax.random.PRNGKey(0) if backend == "jax" else None
         if sample_params["is_vertical"]:
             md = sample_params["md"]
@@ -241,6 +277,8 @@ class DeStripe:
                 .transpose(1, 0)[: md * nd // 2, :][..., None]
             )
 
+        _mark("target/downsample + FFT", (targetf, targetd))
+
         # initialize
         generate_mask_dict_func = (
             generate_mask_dict_jax if backend == "jax" else generate_mask_dict_torch
@@ -259,6 +297,8 @@ class DeStripe:
             sample_params,
         )
 
+        _mark("generate_mask_dict", (mask_dict, targets_f, targetd_bilinear))
+
         aver = targetd.sum((2, 3))
 
         initialize_cmplx_model = (
@@ -267,17 +307,24 @@ class DeStripe:
             else initialize_cmplx_model_torch
         )
 
-        net_params = initialize_cmplx_model(
-            update_method._network,
-            rng_seq,
-            {
-                "aver": aver,
-                "Xf": targetf,
-                "target": targetd,
-                "target_hr": target,
-                "coor": mask_dict["coor"],
-            },
-        )
+        if initial_net_params is None:
+            net_params = initialize_cmplx_model(
+                update_method._network,
+                rng_seq,
+                {
+                    "aver": aver,
+                    "Xf": targetf,
+                    "target": targetd,
+                    "target_hr": target,
+                    "coor": mask_dict["coor"],
+                },
+            )
+        else:
+            # Warm start: keep learned network weights, but reset optimizer state.
+            # All planes in this call have the same dimensions and graph structure.
+            net_params = initial_net_params
+
+        _mark("initialize/reuse model parameters", net_params)
 
         opt_state = update_method.opt_init(net_params)
 
@@ -287,8 +334,22 @@ class DeStripe:
             }
         )
 
+        _mark("optimizer init + mask update", (opt_state, mask_dict))
+
+        # Collect loss on-device during training; transfer only once per slice.
+        # Plot/CSV creation is deferred until all slices have completed.
+        analysis = analysis or {}
+        collect_loss = (
+            bool(analysis.get("plot_epoch_loss", False))
+            or bool(analysis.get("save_epoch_loss_csv", False))
+        ) and loss_prefix is not None
+        loss_history = [] if collect_loss else None
+
+        n_epochs_this_slice = (
+            train_params["n_epochs"] if epochs_override is None else epochs_override
+        )
         for epoch in tqdm.tqdm(
-            range(train_params["n_epochs"]),
+            range(n_epochs_this_slice),
             leave=False,
             desc="for {} ({} slices in total): ".format(s_, z),
         ):
@@ -304,6 +365,19 @@ class DeStripe:
                 targets_f,
                 targetd_bilinear,
             )
+            if collect_loss:
+                loss_history.append(l if backend == "jax" else l.detach())
+
+        _mark("epoch loop GPU complete", (net_params, opt_state, Y_raw))
+
+        if collect_loss:
+            if backend == "jax":
+                # Synchronize/copy once rather than once per epoch.
+                loss_history = np.asarray(jax.device_get(jnp.stack(loss_history)), dtype=np.float64)
+            else:
+                loss_history = torch.stack(loss_history).cpu().numpy().astype(np.float64)
+
+        _mark("loss history transfer/aggregation")
 
         Y_GU = GuidedFilterHRModel(
             Y_raw,
@@ -315,6 +389,8 @@ class DeStripe:
             sample_params["angle_offset_individual"],
             backend=backend,
         )
+
+        _mark("GuidedFilterHRModel upsampling", Y_GU)
 
         if len(sample_params["illu_orient"]) > 0:
             if backend == "jax":
@@ -354,11 +430,19 @@ class DeStripe:
             )
         else:
             Y = 10**Y_GU
-        return Y[0, 0], (
-            10 ** np.asarray(target[0, 0])
-            if backend == "jax"
-            else 10 ** target[0, 0].cpu().data.numpy()
-        )
+        _mark("postprocess / 10**Y_GU", Y)
+
+        # Avoid an expensive full-resolution device-to-host transfer and
+        # exponentiation when the caller is not displaying the target image.
+        target_output = None
+        if return_target:
+            target_output = (
+                10 ** np.asarray(target[0, 0])
+                if backend == "jax"
+                else 10 ** target[0, 0].cpu().data.numpy()
+            )
+        _mark("optional target output", target_output)
+        return Y[0, 0], target_output, loss_history, net_params
 
     @staticmethod
     def train_on_full_arr(
@@ -377,6 +461,8 @@ class DeStripe:
         display_angle_orientation: bool = True,
         illu_orient: str = None,
         save_path: str = None,
+        analysis: dict = None,
+        warm_start: dict = None,
         ):
         """
         Train the destriping model on a full 3D array (volume).
@@ -486,6 +572,7 @@ class DeStripe:
                 n // train_params["resample_ratio"],
             )
 
+        aux_start = time.perf_counter()
         hier_mask_arr, hier_ind_arr, NI_arr = prepare_aux(
             sample_params["md"],
             sample_params["nd"],
@@ -497,6 +584,7 @@ class DeStripe:
             train_params["n_neighbors"],
             backend=backend,
         )
+        print(f"[timing] prepare_aux: {time.perf_counter() - aux_start:.2f}s", flush=True)
         if display_angle_orientation:
             print("ANGLES ACTUALLY PLOTTED:", sample_params["angle_offset_individual"])
             print("Please check the orientation of the stripes...")
@@ -570,28 +658,82 @@ class DeStripe:
                 0.01,
             )
 
+        # This is experimental weight transfer between adjacent 2D planes.
+        # It does NOT convert the algorithm to a 3D network.
+        warm_start = warm_start or {}
+        warm_enabled = bool(warm_start.get("enabled", False))
+        if warm_enabled and backend != "jax":
+            raise ValueError("warm_start is currently implemented only for JAX")
+        warm_epochs = int(warm_start.get("epochs_after_first", train_params["n_epochs"]))
+        if warm_epochs < 1:
+            raise ValueError("warm_start.epochs_after_first must be >= 1")
+        previous_net_params = None
+
+        # One loss plot per experiment: first-plane curve and mean curve for
+        # subsequent (warm-started) planes, not a PNG for every Z-plane.
+        collect_loss = bool(
+            (analysis or {}).get("plot_epoch_loss", False)
+            or (analysis or {}).get("save_epoch_loss_csv", False)
+        ) and save_path is not None
+        first_loss = None
+        later_loss_sum = np.zeros(warm_epochs if warm_enabled else train_params["n_epochs"], dtype=np.float64) if collect_loss else None
+        n_later_loss_slices = 0
+
+        # Constant masks are identical for all planes in single-view mode.
+        # Reusing these JAX arrays avoids full-size CPU allocations and
+        # repeated host-to-device transfers at each Z-plane.
+        plane_shape = (1, 1, m, n) if sample_params["is_vertical"] else (1, 1, n, m)
+        if backend == "jax":
+            default_mask_jax = jnp.zeros(plane_shape, dtype=jnp.bool_) if mask is None else None
+            single_view_fusion_jax = jnp.ones(plane_shape, dtype=jnp.float32) if not flag_compose else None
+
         for i in range(z):
+            plane_start = time.perf_counter()
             input = np.log10(np.clip(np.asarray(X[i : i + 1])[:, :, :m, :n], 1, None))
-            mask_slice = np.asarray(mask[i : i + 1, :m, :n])[None]
+            mask_slice = (
+                np.asarray(mask[i : i + 1, :m, :n])[None]
+                if mask is not None else None
+            )
             if flag_compose:
                 fusion_mask_slice = np.asarray(fusion_mask[i : i + 1])[:, :, :m, :n]
+            elif backend == "jax":
+                fusion_mask_slice = None  # reuse single_view_fusion_jax
             else:
                 fusion_mask_slice = np.ones(input.shape, dtype=np.float32)
 
             if not sample_params["is_vertical"]:
                 input = input.transpose(0, 1, 3, 2)
-                mask_slice = mask_slice.transpose(0, 1, 3, 2)
-                fusion_mask_slice = fusion_mask_slice.transpose(0, 1, 3, 2)
+                if mask_slice is not None:
+                    mask_slice = mask_slice.transpose(0, 1, 3, 2)
+                if fusion_mask_slice is not None:
+                    fusion_mask_slice = fusion_mask_slice.transpose(0, 1, 3, 2)
             if backend == "jax":
                 input = jnp.asarray(input)
-                mask_slice = jnp.asarray(mask_slice)
-                fusion_mask_slice = jnp.asarray(fusion_mask_slice)
+                mask_slice = jnp.asarray(mask_slice) if mask_slice is not None else default_mask_jax
+                fusion_mask_slice = (
+                    jnp.asarray(fusion_mask_slice)
+                    if fusion_mask_slice is not None else single_view_fusion_jax
+                )
             else:
                 input = torch.from_numpy(input).to(device)
-                mask_slice = torch.from_numpy(mask_slice).to(device)
+                mask_slice = (
+                    torch.from_numpy(mask_slice).to(device)
+                    if mask_slice is not None else torch.zeros(input.shape, device=device, dtype=torch.bool)
+                )
                 fusion_mask_slice = torch.from_numpy(fusion_mask_slice).to(device)
 
-            Y, target = DeStripe.train_on_one_slice(
+            prep_seconds = time.perf_counter() - plane_start
+            print(f"[timing] plane {i+1} input/masks prepared: {time.perf_counter() - plane_start:.2f}s", flush=True)
+            using_warm_start = warm_enabled and i > 0
+            epochs_this_slice = warm_epochs if using_warm_start else train_params["n_epochs"]
+            print(
+                f"Z-plane {i+1}/{z}: "
+                f"{'WARM START' if using_warm_start else 'FRESH INITIALIZATION'}, "
+                f"epochs={epochs_this_slice}",
+                flush=True,
+            )
+            slice_call_start = time.perf_counter()
+            Y, target, slice_losses, trained_net_params = DeStripe.train_on_one_slice(
                 GuidedFilterHRModel,
                 update_method,
                 sample_params,
@@ -602,11 +744,28 @@ class DeStripe:
                 i + 1,
                 z,
                 backend=backend,
+                loss_prefix=save_path,
+                analysis=analysis,
+                initial_net_params=previous_net_params if using_warm_start else None,
+                epochs_override=epochs_this_slice,
+                return_target=display,
             )
+            _profile_log(f"plane {i+1}/{z} train_on_one_slice total (includes reconstruction)", time.perf_counter() - slice_call_start)
+            _profile_log(f"plane {i+1}/{z} input/prep to call (included in total)", prep_seconds)
+            print(f"[timing] plane {i+1} training + reconstruction: {time.perf_counter() - plane_start:.2f}s cumulative", flush=True)
+            if warm_enabled:
+                previous_net_params = trained_net_params
+            if slice_losses is not None:
+                if i == 0:
+                    first_loss = slice_losses
+                else:
+                    later_loss_sum += slice_losses
+                    n_later_loss_slices += 1
 
             if not sample_params["is_vertical"]:
                 Y = Y.T
-                target = target.T
+                if target is not None:
+                    target = target.T
 
             if display:
                 plt.figure(dpi=300)
@@ -620,6 +779,7 @@ class DeStripe:
                 plt.axis("off")
                 plt.show()
 
+            conversion_start = time.perf_counter()
             out_slice = np.clip(Y, 0, 65535).astype(np.uint16)
             out_slice = np.pad(
                 out_slice,
@@ -627,14 +787,67 @@ class DeStripe:
                 mode="edge",
             )
 
+            _profile_log(f"plane {i+1}/{z} image transpose/uint16 conversion", time.perf_counter() - conversion_start)
+            write_start = time.perf_counter()
             result_mm[i] = out_slice
-            MIN[i] = out_slice.min()
-            MAX[i] = out_slice.max()
-            mean[i] = np.mean(out_slice + 0.1)
+            # These statistics are used only by global_correction(),
+            # which runs when non_positive is False and z != 1.
+            if z != 1 and not sample_params["non_positive"]:
+                MIN[i] = out_slice.min()
+                MAX[i] = out_slice.max()
+                mean[i] = np.mean(out_slice + 0.1)
             done_mm[i] = 1
 
             getattr(result_mm, "flush", lambda: None)()
             getattr(done_mm, "flush", lambda: None)()
+            _profile_log(f"plane {i+1}/{z} memmap write + flush", time.perf_counter() - write_start)
+            print(f"[timing] plane {i+1} all stages: {time.perf_counter() - plane_start:.2f}s", flush=True)
+
+        if collect_loss and first_loss is not None:
+            prefix = Path(save_path)
+            if n_later_loss_slices:
+                later_mean = later_loss_sum / n_later_loss_slices
+            else:
+                later_mean = None
+
+            if (analysis or {}).get("save_epoch_loss_csv", False):
+                # One CSV: rows up to max epoch count, blank where unavailable.
+                length = max(len(first_loss), len(later_mean) if later_mean is not None else 0)
+                first_column = np.full(length, np.nan)
+                later_column = np.full(length, np.nan)
+                first_column[:len(first_loss)] = first_loss
+                if later_mean is not None:
+                    later_column[:len(later_mean)] = later_mean
+                csv_path = prefix.with_name(f"{prefix.stem}_loss_comparison.csv")
+                np.savetxt(
+                    csv_path,
+                    np.column_stack((np.arange(1, length + 1), first_column, later_column)),
+                    delimiter=",",
+                    header="epoch,first_plane_loss,mean_later_planes_loss",
+                    comments="",
+                    fmt=["%d", "%.10g", "%.10g"],
+                )
+                print(f"Loss comparison CSV saved: {csv_path}", flush=True)
+
+            if (analysis or {}).get("plot_epoch_loss", False):
+                plot_path = prefix.with_name(f"{prefix.stem}_loss_comparison.png")
+                fig, ax = plt.subplots(figsize=(9, 5))
+                ax.plot(np.arange(1, len(first_loss)+1), first_loss,
+                        label="First plane (fresh initialization)", linewidth=1.5)
+                if later_mean is not None:
+                    ax.plot(np.arange(1, len(later_mean)+1), later_mean,
+                            label=f"Mean of {n_later_loss_slices} later plane(s)"
+                                  + (" (warm start)" if warm_enabled else " (fresh)"),
+                            linewidth=1.5)
+                ax.set_xlabel("Epoch within each plane")
+                ax.set_ylabel("Training loss")
+                ax.set_title(f"Training loss comparison across {z} Z-plane(s)")
+                ax.grid(True, alpha=0.3)
+                ax.legend()
+                fig.tight_layout()
+                fig.savefig(plot_path, dpi=180)
+                plt.close(fig)
+                print(f"Loss comparison plot saved: {plot_path}", flush=True)
 
         if (z != 1) and (not sample_params["non_positive"]):
             print("global correcting...")
@@ -660,6 +873,8 @@ class DeStripe:
         display_angle_orientation: bool = True,
         non_positive: bool = False,
         allow_stripe_deviation: bool = False,
+        analysis: dict = None,
+        warm_start: dict = None,
         **kwargs,
     ):
         """
@@ -824,7 +1039,9 @@ class DeStripe:
 
         # read in mask
         if mask is None:
-            mask_data = np.zeros((z, m, n), dtype=bool)
+            # No manual preservation mask: avoid allocating a full-volume
+            # boolean array. train_on_full_arr will reuse one zero slice.
+            mask_data = None
         else:
             mask_handle = BioImage(mask)
             mask_data = mask_handle.get_image_dask_data("ZYX", T=0, C=0)
@@ -924,6 +1141,8 @@ class DeStripe:
                 display_angle_orientation=display_angle_orientation,
                 illu_orient=illu_orient,
                 save_path=save_path,
+                analysis=analysis,
+                warm_start=warm_start,
             )
             return out
         except Exception:
@@ -944,11 +1163,13 @@ class DeStripe:
             try:
                 if save_path is not None:
                     base, stem = ensure_abs_tif(save_path)
+                    _finalize_start = time.perf_counter()
                     finalize_save(
                         os.path.join(base, f"{stem}__work.npy"),
                         os.path.join(base, f"{stem}__done.npy"),
                         save_path,
                     )
+                    _profile_log("finalize_save output TIFF", time.perf_counter() - _finalize_start)
             except (OSError, ValueError):
                 pass
 
@@ -966,7 +1187,23 @@ if __name__ == "__main__":
         cfg = json.load(f)
 
     inp = cfg["input"]
-    out_path = Path(cfg["output"]["save_path"])
+    # Automatically derive output filename from input Zarr
+    zarr_path = Path(inp["zarr_path"])
+    input_name = zarr_path.name
+
+    if input_name.endswith(".ome.zarr"):
+        input_name = input_name[:-len(".ome.zarr")]
+    elif input_name.endswith(".zarr"):
+        input_name = input_name[:-len(".zarr")]
+    
+    # Get output directory and optional suffix
+    output_dir = Path(cfg["output"]["save_dir"])
+    suffix = cfg["output"].get("suffix", "_destriped")
+    
+    out_path = output_dir / f"{input_name}{suffix}.tif"
+
+    print(f"Output will be saved to: {out_path}")
+
 
     # Open the OME-Zarr, read-only
     store = ts.open(
@@ -990,7 +1227,9 @@ if __name__ == "__main__":
         for axis in ("z", "y", "x")
     )
 
+    input_read_start = time.perf_counter()
     image = store[selection].read().result()
+    print(f"[timing] TensorStore read: {time.perf_counter() - input_read_start:.2f}s", flush=True)
 
     if image.ndim != 3 or any(dim == 0 for dim in image.shape):
         raise ValueError(f"Invalid image crop: {image.shape}")
@@ -1024,7 +1263,54 @@ if __name__ == "__main__":
 
     shutil.copy2(config_path, snapshot_path)
     print(f"Experiment settings saved to: {snapshot_path}")
+    
+# ---------------------------------------------------------
+# OPTIONAL: SAVE ORIGINAL ZARR CROP AS TIFF BEFORE TRAINING
+# ---------------------------------------------------------
+    if cfg["output"].get("save_original", False):
 
+        import tifffile
+
+        original_path = out_path.with_name(
+            out_path.stem + "_original.tif"
+        )
+
+        if original_path.exists():
+            raise FileExistsError(
+                f"Original TIFF already exists: {original_path}"
+            )
+
+        orig_save_start = time.perf_counter()
+        print(f"Saving original input to: {original_path}", flush=True)
+
+    # 'image' is the exact Zarr crop already loaded for training.
+    # Preserve original pixel values and dtype.
+    # Exclusive file creation prevents accidental overwrites.
+        try:
+            with original_path.open("xb") as handle:
+                tifffile.imwrite(
+                    handle,
+                    image,
+                    photometric="minisblack",
+                    metadata={"axes": "ZYX"},
+                    bigtiff=image.nbytes >= 2**32 - 2**25,
+                )
+        except BaseException:
+            original_path.unlink(missing_ok=True)
+            raise
+
+        _profile_log("original input TIFF save", time.perf_counter() - orig_save_start)
+        print(
+            f"Original saved! Shape: {image.shape}, "
+            f"dtype: {image.dtype}",
+            flush=True
+        )
+
+# ---------------------------------------------------------
+# START LEONARDO TRAINING
+# ---------------------------------------------------------
+
+    total_train_start = time.perf_counter()
     # Create Leonardo with training settings from JSON
     model = DeStripe(**cfg["training"])
 
@@ -1034,8 +1320,13 @@ if __name__ == "__main__":
         save_path=str(out_path),
         **cfg["destripe"],
         **cfg["display"],
+        analysis=cfg.get("analysis", {}),
+        warm_start=cfg.get("warm_start", {}),
     )
     #custom post_processing
     from custom_post_processing import run_custom_postprocessing
 
-    final_path = run_custom_postprocessing(image, result, cfg)
+    print(f"[timing] Leonardo main processing (including TIFF finalize): {time.perf_counter() - total_train_start:.2f}s", flush=True)
+    post_start = time.perf_counter()
+    final_path = run_custom_postprocessing(image, result, cfg, out_path)
+    print(f"[timing] custom postprocessing: {time.perf_counter() - post_start:.2f}s", flush=True)

@@ -10,6 +10,49 @@ from jax import jit, value_and_grad
 from jax.example_libraries import optimizers
 
 
+def window_argmax_no_patches(y_pad, r):
+    """
+    Find the argmax within each horizontal sliding window
+    without allocating a huge patch tensor.
+
+    Input:  (batch, channels, height, padded_width)
+    Output: (batch, 1, height, padded_width - r + 1)
+    """
+    import jax
+    import jax.numpy as jnp
+
+    output_width = y_pad.shape[-1] - r + 1
+
+    best_values = y_pad[..., :output_width]
+    best_indices = jnp.zeros(
+        best_values.shape, dtype=jnp.int32
+    )
+
+    def update(offset, state):
+        best_values, best_indices = state
+
+        candidate = jax.lax.dynamic_slice_in_dim(
+            y_pad, offset, output_width, axis=-1
+        )
+
+        better = candidate > best_values
+
+        best_values = jnp.where(
+            better, candidate, best_values
+        )
+        best_indices = jnp.where(
+            better, offset, best_indices
+        )
+
+        return best_values, best_indices
+
+    _, indices = jax.lax.fori_loop(
+        1, r, update, (best_values, best_indices)
+    )
+
+    return indices[:, :1, :, :]
+
+
 def generate_mask_dict_jax(
     y,
     hy,
@@ -112,15 +155,11 @@ def generate_mask_dict_jax(
     )
 
     y_pad = jnp.pad(targets_f, ((0, 0), (0, 0), (0, 0), (r // 2, r // 2)), "constant")
-    inds = jax.lax.conv_general_dilated_patches(y_pad, (1, r), (1, 1), "VALID").argmax(
-        axis=1, keepdims=True
-    )
+    inds = window_argmax_no_patches(y_pad, r)
     inds = inds + jnp.arange(targets_f.shape[-1])[None, None, None, :] - r // 2
 
     y_pad = jnp.pad(y, ((0, 0), (0, 0), (0, 0), (r // 2, r // 2)), "constant")
-    ind = jax.lax.conv_general_dilated_patches(y_pad, (1, r), (1, 1), "VALID").argmax(
-        axis=1, keepdims=True
-    )
+    ind = window_argmax_no_patches(y_pad, r)
     ind = ind + jnp.arange(0, y.shape[-1])[None, None, None, :] - r // 2
 
     mask_tv_f = hk.max_pool(

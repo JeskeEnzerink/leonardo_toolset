@@ -505,27 +505,28 @@ class Loss_jax:
 
         mse = self.main_loss(targets, outputGNNraw_original)
 
-        lconst = 6
+       
+        # Six-level wavelet regularization
+        # Accumulate each level's loss immediately.
+        wave_input = output_att - outputGNNraw_full
 
-        wave_decom_dict = [
-            jaxwt.wavedec2(
-                output_att - outputGNNraw_full, "db4", level=1, mode="reflect"
-            )
-        ]
-        for _ in range(lconst - 1):
-            wave_decom_dict.append(
-                jaxwt.wavedec2(
-                    wave_decom_dict[-1][0],
-                    "db4",
-                    level=1,
-                    mode="reflect",
-                )
+        for i in range(6):
+            coeffs = jaxwt.wavedec2(
+                wave_input,
+                "db4",
+                level=1,
+                mode="reflect"
             )
 
-        for i in range(lconst):
-            mse = mse + 20 * jnp.sum(jnp.abs(wave_decom_dict[i][1][0]))
-            mse = mse + 20 * jnp.sum(jnp.abs(wave_decom_dict[i][1][1]))
-            mse = mse + 40 * jnp.sum(jnp.abs(wave_decom_dict[i][1][2]))
+            approximation, details = coeffs
+
+            mse = mse + 20 * jnp.sum(jnp.abs(details[0]))
+            mse = mse + 20 * jnp.sum(jnp.abs(details[1]))
+            mse = mse + 40 * jnp.sum(jnp.abs(details[2]))
+
+            # Only the approximation continues to the next level
+            wave_input = approximation
+
 
         outputGNNraw_original, outputGNNraw_original_f = self.non_postive_uint(
             outputGNNraw_original,

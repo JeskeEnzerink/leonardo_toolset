@@ -332,6 +332,85 @@ def WedgeMask(
     )
 
 
+def NeighborSampling_efficient(
+    m, n, backend, k_neighbor=16, chunk_size=100_000
+):
+    import numpy as np
+
+    width = 11
+    total = m * n
+    half = total // 2
+
+    # Squared distances from image center
+    x = np.arange(m, dtype=np.int64) - m // 2
+    y = np.arange(n, dtype=np.int64) - n // 2
+
+    dist2 = x[:, None]**2 + y[None, :]**2
+
+    # Each pixel gets one ring ID, without a giant
+    # (number_of_rings, number_of_pixels) mask
+    rings = np.floor(
+        np.sqrt(dist2) / width
+    ).astype(np.int32).ravel()
+
+    del dist2
+
+    # Group pixel indices by ring
+    order = np.argsort(rings, kind="stable")
+    counts = np.bincount(rings)
+
+    # Only the first half is used downstream
+    NI = np.empty((half, k_neighbor), dtype=np.int32)
+
+    rng = np.random.default_rng(0)
+    offset = 0
+
+    for count in counts:
+        if count == 0:
+            continue
+
+        pool = order[offset:offset + count]
+        offset += count
+
+        targets = pool[pool < half]
+
+        # Process output in bounded chunks
+        for start in range(0, len(targets), chunk_size):
+            end = min(start + chunk_size, len(targets))
+
+            random_idx = rng.integers(
+                0, len(pool),
+                size=(end - start, k_neighbor)
+            )
+
+            samples = pool[random_idx]
+
+            # Preserve original frequency reflection
+            samples = np.where(
+                samples > half,
+                2 * half - samples,
+                samples
+            )
+
+            NI[targets[start:end]] = samples.astype(
+                np.int32
+            )
+
+    
+    # Match original behavior at the reflection boundary
+    NI[NI == half] = half - 1
+
+    # Include the pixel's own index as the first column
+    NI_full = np.empty((half, k_neighbor + 1), dtype=np.int32)
+    NI_full[:, 0] = np.arange(half, dtype=np.int32)
+    NI_full[:, 1:] = NI
+
+    if backend == "jax":
+        import jax.numpy as jnp
+        return jnp.asarray(NI_full)
+
+    return NI_full
+
 def prepare_aux(
     md: int,
     nd: int,
@@ -367,7 +446,7 @@ def prepare_aux(
             [dep_package.where(angleMask.reshape(-1) == index)[0] for index in range(2)]
         )
     )
-    NI_all = NeighborSampling(md, nd, k_neighbor=Nneighbors, backend=backend)
+    NI_all = NeighborSampling_efficient(md, nd, k_neighbor=Nneighbors, backend=backend)
     NI = dep_package.concatenate(
         [NI_all[angle_mask == 0, :].T for angle_mask in angleMask], 1
     )  # 1 : Nneighbors + 1

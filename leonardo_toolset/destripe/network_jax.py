@@ -5,6 +5,80 @@ import numpy as np
 
 from leonardo_toolset.destripe.utils_jax import generate_mapping_coordinates
 
+@jax.custom_vjp
+def neighbor_sum_memory_efficient(Xf, w, NI):
+    return _neighbor_sum_forward(Xf, w, NI)
+
+
+def _neighbor_sum_forward(Xf, w, NI):
+    n = NI.shape[1]
+
+    result = jnp.zeros(
+        (n,) + Xf.shape[1:],
+        dtype=Xf.dtype
+    )
+
+    def step(k, result):
+        features = Xf[NI[k]]
+        weights = w[k, :, None, None]
+        return result + features * weights
+
+    return jax.lax.fori_loop(
+        0, NI.shape[0], step, result
+    )
+
+
+def _neighbor_sum_fwd(Xf, w, NI):
+    result = _neighbor_sum_forward(Xf, w, NI)
+    return result, (Xf, w, NI)
+
+
+def _neighbor_sum_bwd(saved, grad_output):
+    Xf, w, NI = saved
+
+    grad_Xf = jnp.zeros_like(Xf)
+    grad_w = jnp.zeros_like(w)
+
+    def step(k, state):
+        grad_Xf, grad_w = state
+
+        indices = NI[k]
+        features = Xf[indices]
+
+        # Gradient with respect to input features
+        grad_features = (
+            grad_output * w[k, :, None, None]
+        )
+
+        grad_Xf = grad_Xf.at[indices].add(
+            grad_features
+        )
+
+        # Gradient with respect to neighbor weights
+        grad_weights = jnp.sum(
+            grad_output * features,
+            axis=(1, 2)
+        )
+
+        grad_w = grad_w.at[k].set(grad_weights)
+
+        return grad_Xf, grad_w
+
+    grad_Xf, grad_w = jax.lax.fori_loop(
+        0,
+        NI.shape[0],
+        step,
+        (grad_Xf, grad_w)
+    )
+
+    return grad_Xf, grad_w, None
+
+
+neighbor_sum_memory_efficient.defvjp(
+    _neighbor_sum_fwd,
+    _neighbor_sum_bwd
+)
+
 
 class Cmplx_Xavier_Init(hk.initializers.Initializer):
     def __init__(
@@ -134,7 +208,13 @@ class gnn(hk.Module):
             jnp.complex64,
             init=Cmplx_Xavier_Init(self.NI.shape[0], self.NI.shape[1]),
         )
-        Xfcx = jnp.sum(jnp.einsum("knbc,kn->knbc", Xf[self.NI, :], w), 0)  # (M*N, c)
+        
+        # Accumulate weighted neighbor features without
+        # creating the full neighbor-feature tensor.
+        Xfcx = neighbor_sum_memory_efficient(
+            Xf, w, self.NI)
+
+
         Xf_tvx = jnp.concatenate((Xfcx, Xf[self.hier_mask, :]), 0)[
             self.hier_ind, :
         ].reshape(
