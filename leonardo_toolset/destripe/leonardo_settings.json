@@ -1,0 +1,91 @@
+{
+  "input": {
+    "zarr_dir": "/ABSOLUTE/PATH/TO/stitched_output",
+    "dataset_id": "YOUR_DATASET_ID",
+    "channels": [
+      {
+        "name": "C00",
+        "enabled": true
+      },
+      {
+        "name": "C01",
+        "enabled": true
+      },
+      {
+        "name": "C02",
+        "enabled": true,
+        "postprocessing": {
+          "method": "original_fft",
+          "threshold": "auto",
+          "margin": 24
+        }
+      },
+      {
+        "name": "C03",
+        "enabled": true,
+        "postprocessing": {
+          "method": "smooth_weighted",
+          "threshold": 200,
+          "margin": 24,
+          "sigma": 48,
+          "support_floor": 0.03
+        }
+      }
+    ],
+    "zarr_level": 0,
+    "z_start": null,
+    "z_end": null,
+    "y_start": null,
+    "y_end": null,
+    "x_start": null,
+    "x_end": null
+  },
+  "output": {
+    "save_dir": "/ABSOLUTE/PATH/TO/desired_output",
+    "suffix": "_destriped",
+    "save_original": false,
+    "save_before_postprocessing": false
+  },
+  "destripe": {
+    "is_vertical": false,
+    "angle_offset": [-0.3, -10, 10],
+    "illu_orient": null,
+    "non_positive": true,
+    "allow_stripe_deviation": false
+  },
+  "training": {
+    "resample_ratio": 4,
+    "guided_upsample_kernel": 129,
+    "hessian_kernel_sigma": 1,
+    "lambda_masking_mse": 1,
+    "lambda_tv": 1,
+    "lambda_hessian": 1,
+    "inc": 16,
+    "n_epochs": 150,
+    "wedge_degree": 10,
+    "n_neighbors": 8,
+    "backend": "jax",
+    "device": null
+  },
+  "warm_start": {
+    "enabled": false,
+    "epochs_after_first": 150
+  },
+  "block_training": {
+    "enabled": false,
+    "block_size": 5,
+    "epochs": 150,
+    "cache": "host"
+  },
+  "display": {
+    "display": false,
+    "display_angle_orientation": false
+  },
+  "analysis": {
+    "plot_epoch_loss": false,
+    "save_epoch_loss_csv": false
+  },
+  "automation": {
+    "merge_after_success": true
+  }
+}
